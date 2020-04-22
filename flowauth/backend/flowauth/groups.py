@@ -184,8 +184,8 @@ def edit_group_servers(group_id):
     group = Group.query.filter(Group.id == group_id).first_or_404()
     current_app.logger.debug("Edit group servers", servers=servers, group_id=group_id)
     existing_limits = group.server_token_limits
+    objs_to_update = [group]
 
-    db.session.add(group)
     revised_limits = []
 
     for server in servers:
@@ -217,7 +217,7 @@ def edit_group_servers(group_id):
                 "End date too late", payload={"bad_field": "latest_expiry"}
             )
         revised_limits.append(limits)
-        db.session.add(limits)
+
         # Create permissions
         to_remove = [
             gsp
@@ -250,7 +250,7 @@ def edit_group_servers(group_id):
                     group_id=group.id,
                     server_id=server_obj.id,
                 )
-                db.session.add(gsp)
+                objs_to_update.append(gsp)
 
         # clean up
         for gsp in to_remove:
@@ -267,6 +267,8 @@ def edit_group_servers(group_id):
                 "Removed limit.", group_id=limit.group.id, server=limit.server.id,
             )
             db.session.delete(limit)
+
+    db.session.bulk_save_objects(objs_to_update)
     db.session.commit()
     return jsonify({"id": group.id, "name": group.name})
 
