@@ -261,11 +261,11 @@ class GeomSpatialUnit(SpatialUnitMixin, Query):
         Defaults to connection.location_table
     geom_column : str, default "geom"
         Name of the column in geom_table that defines the geometry.
-    geom_table_join_on : str, optional
-        Name of the column from geom_table to join on.
+    geom_table_join_on : str or list of str, optional
+        Name of the columns from geom_table to join on.
         Required if geom_table != connection.location_table.
-    location_table_join_on : str, optional
-        Name of the column from connection.location_table to join on.
+    location_table_join_on : str or list of str, optional
+        Name of the columns from connection.location_table to join on.
         Required if geom_table != connection.location_table.
     """
 
@@ -276,8 +276,8 @@ class GeomSpatialUnit(SpatialUnitMixin, Query):
         location_id_column_names: Union[str, Iterable[str]],
         geom_table: Optional[Union[Query, str]] = None,
         geom_column: str = "geom",
-        geom_table_join_on: Optional[str] = None,
-        location_table_join_on: Optional[str] = None,
+        geom_table_join_on: Optional[Union[str, List[str]]] = None,
+        location_table_join_on: Optional[Union[str, List[str]]] = None,
     ):
         if isinstance(geom_table_column_names, str):
             self._geom_table_cols = (geom_table_column_names,)
@@ -306,6 +306,11 @@ class GeomSpatialUnit(SpatialUnitMixin, Query):
             self.geom_table = geom_table
         else:
             self.geom_table = Table(name=geom_table)
+
+        if isinstance(geom_table_join_on, str):
+            geom_table_join_on = [geom_table_join_on]
+        if isinstance(location_table_join_on, str):
+            location_table_join_on = [location_table_join_on]
 
         self._geom_on = geom_table_join_on
         self._loc_on = location_table_join_on
@@ -345,10 +350,14 @@ class GeomSpatialUnit(SpatialUnitMixin, Query):
         """
         if self._loc_on is None or self._geom_on is None:
             raise ValueError("No columns specified for join.")
+        join_clause = " AND ".join(
+            f"{loc_table_alias}.{loc_on} = {geom_table_alias}.{geom_on}"
+            for loc_on, geom_on in zip(self._loc_on, self._geom_on)
+        )
         return f"""
         LEFT JOIN
             ({self.geom_table.get_query()}) AS {geom_table_alias}
-        ON {loc_table_alias}.{self._loc_on} = {geom_table_alias}.{self._geom_on}
+        ON {join_clause}
         """
 
     def _make_query(self):
@@ -459,11 +468,11 @@ class LonLatSpatialUnit(GeomSpatialUnit):
     geom_column : str, default "geom_point"
         Name of the column in geom_table that defines the point geometry from
         which longitude and latitude will be extracted.
-    geom_table_join_on : str, optional
-        Name of the column from geom_table to join on.
+    geom_table_join_on : str or list of str, optional
+        Name(s) of the column(s) from geom_table to join on.
         Required if geom_table != connection.location_table.
-    location_table_join_on : str, optional
-        Name of the column from connection.location_table to join on.
+    location_table_join_on : str or list of str, optional
+        Name(s) of the column(s) from connection.location_table to join on.
         Required if geom_table != connection.location_table.
     """
 
@@ -474,8 +483,8 @@ class LonLatSpatialUnit(GeomSpatialUnit):
         location_id_column_names: Union[str, Iterable[str]] = (),
         geom_table: Optional[Union[Query, str]] = None,
         geom_column: str = "geom_point",
-        geom_table_join_on: Optional[str] = None,
-        location_table_join_on: Optional[str] = None,
+        geom_table_join_on: Optional[Union[str, List[str]]] = None,
+        location_table_join_on: Optional[Union[str, List[str]]] = None,
     ):
         super().__init__(
             geom_table_column_names=geom_table_column_names,
@@ -671,6 +680,59 @@ class VersionedCellSpatialUnit(LonLatSpatialUnit):
         return "versioned-cell"
 
 
+class CellClusterSpatialUnit(LonLatSpatialUnit):
+    """
+    Subclass of LonLatSpatialUnit that maps cell location_id a cluster of cells.
+    """
+
+    def __init__(self, geom_table: str, geom_column: str = "geom") -> None:
+        if get_db().location_table != "infrastructure.cells":
+            raise InvalidSpatialUnitError("Cell cluster spatial unit is unavailable.")
+
+        super().__init__(
+            geom_table_column_names=["cells"],
+            location_id_column_names=["id", "version"],
+            geom_table=f"infrastructure.{geom_table}",
+            geom_column=geom_column,
+            geom_table_join_on="cells",
+            location_table_join_on=["id", "version"],
+        )
+
+    def _join_clause(self, loc_table_alias: str, geom_table_alias: str) -> str:
+        """
+        Returns a SQL join clause to join the location table to the geography
+        table. The join clause is not used if self.geom_table and
+        get_db().location_table are the same table.
+
+        Parameters
+        ----------
+        loc_table_alias : str
+            Table alias for the location table.
+        geom_table_alias : str
+            Table alias for the geography table.
+
+        Returns
+        -------
+        str
+            SQL join clause
+        """
+        if self._loc_on is None or self._geom_on is None:
+            raise ValueError("No columns specified for join.")
+
+        join_clause = ",".join(
+            f"'{col}', {geom_table_alias}.{col}" for col in self._loc_on
+        )
+        return f"""
+        LEFT JOIN
+            ({self.geom_table.get_query()}) AS {geom_table_alias}
+        ON {geom_table_alias}.{self._geom_on} <@ jsonb_build_array(jsonb_build_object({join_clause}))
+        """
+
+    @property
+    def canonical_name(self) -> str:
+        return "cell-cluster"
+
+
 class VersionedSiteSpatialUnit(LonLatSpatialUnit):
     """
     Subclass of LonLatSpatialUnit that maps cell location_id to a site version
@@ -774,6 +836,7 @@ def make_spatial_unit(
     size: Union[float, int] = None,
     geom_table: Optional[Union[Query, str]] = None,
     geom_column: str = "geom",
+    cluster_table: Optional[str] = None,
 ) -> Union[CellSpatialUnit, GeomSpatialUnit]:
     """
     Helper function to create an object representing a spatial unit.
@@ -840,6 +903,8 @@ def make_spatial_unit(
         return VersionedSiteSpatialUnit()
     elif spatial_unit_type == "lon-lat":
         return LonLatSpatialUnit()
+    elif spatial_unit_type == "cell-cluster":
+        return CellClusterSpatialUnit(geom_table=geom_table)
     elif spatial_unit_type == "admin":
         if level is None:
             raise ValueError(
