@@ -536,7 +536,7 @@ class Query(metaclass=ABCMeta):
             logger.info("Table already exists")
             return []
 
-        Q = f"""EXPLAIN (ANALYZE TRUE, TIMING FALSE, FORMAT JSON) CREATE TABLE {full_name} AS 
+        Q = f"""EXPLAIN (ANALYZE TRUE, TIMING FALSE, FORMAT JSON) CREATE TABLE UNLOGGED WITH (autovacuum_enabled=f) {full_name} AS 
         (SELECT {self.column_names_as_string_list} FROM ({self._make_query()}) _)"""
         queries.append(Q)
         for ix in self.index_cols:
@@ -545,6 +545,7 @@ class Query(metaclass=ABCMeta):
                     tbl=full_name, ixen=",".join(ix) if isinstance(ix, list) else ix
                 )
             )
+        queries.append(f"ANALYZE {full_name}")
         return queries
 
     def to_sql(
