@@ -536,7 +536,7 @@ class Query(metaclass=ABCMeta):
             logger.info("Table already exists")
             return []
 
-        Q = f"""EXPLAIN (ANALYZE TRUE, TIMING FALSE, FORMAT JSON) CREATE TABLE UNLOGGED {full_name} WITH (autovacuum_enabled=f) AS 
+        Q = f"""EXPLAIN (ANALYZE TRUE, TIMING FALSE, FORMAT JSON) CREATE UNLOGGED TABLE {full_name} WITH (autovacuum_enabled=f) AS 
         (SELECT {self.column_names_as_string_list} FROM ({self._make_query()}) _)"""
         queries.append(Q)
         for ix in self.index_cols:
